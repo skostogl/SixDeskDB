@@ -198,7 +198,7 @@ def check_sixdeskenv(studyDir):
 
 class SixDeskDB(object):
   @classmethod
-  def from_dir(cls,studyDir,logname=None):
+  def from_dir(cls,studyDir,logname=None, include_fma_sixout=False):
     '''create local Database for storing study'''
     sixdeskenv,sysenv=check_sixdeskenv(studyDir)
     env_var = parse_env(studyDir,logname=logname)
@@ -209,7 +209,7 @@ class SixDeskDB(object):
     db.st_mad6t_run2()
     db.st_mad6t_results()
     db.st_six_beta()
-    db.st_six_input()
+    db.st_six_input(include_fma_sixout=include_fma_sixout)
     # db.st_six_results()
     return db
 
@@ -574,7 +574,7 @@ class SixDeskDB(object):
 #    jobs=list(cur.execute(sql))[0][0]
 #    print " db now contains %d jobs"% (jobs)
 
-  def st_six_input(self):
+  def st_six_input(self, include_fma_sixout=False):
     ''' store input values (seed,tunes,amps,etc) along with fort.3 file'''
     conn = self.conn
     cur = conn.cursor()
@@ -615,9 +615,12 @@ class SixDeskDB(object):
       f3=os.path.join(dirName, 'fort.3.gz')
       f10=os.path.join(dirName, 'fort.10.gz')
       ffma=os.path.join(dirName, 'fma_sixtrack.gz')
+      ### Activate search for fma_sixtrack in Sixout.zip
+      if include_fma_sixout:
+        ffma_sixout=os.path.join(dirName, 'Sixout.zip')
       ranges= dirName.split('/')[-3]
       if '_' in ranges:
-        fn3_exists=fn10_exists=fnfma_exists=False
+        fn3_exists=fn10_exists=fnfma_exists=fnfma_sixout_exists=False
         if os.path.exists(f3):
             file_count3+=1
             fn3_exists=True
@@ -627,6 +630,13 @@ class SixDeskDB(object):
         if os.path.exists(ffma):
             file_countfma += 1
             fnfma_exists=True
+        elif include_fma_sixout:
+          if os.path.exists(ffma_sixout):
+            import zipfile
+            sixout = zipfile.ZipFile(ffma_sixout)
+            if 'fma_sixtrack' in sixout.namelist():
+              file_countfma += 1
+              fnfma_sixout_exists=True
         if file_count3%100==0:
            sys.stdout.write('.')
            sys.stdout.flush()
@@ -673,6 +683,18 @@ class SixDeskDB(object):
                   rowsfma.append([six_id,countl]+lines.split()+[mtimefma])
                   countl += 1
              countfma += 1
+        elif fnfma_sixout_exists:
+          ## Read fma_sixtrack from Sixout.zip
+          ffma = sixout.open('fma_sixtrack','r')
+          mtimefma = os.path.getmtime(ffma_sixout)
+          mtimefma_old=fma_data.get(six_id,0)
+          if mtimefma > mtimefma_old and os.path.getsize(ffma_sixout)>0:
+            countl = 1
+            for lines in ffma:
+              if (lines.rfind('#') < 0):#skip header
+                rowsfma.append([six_id,countl]+lines.split()+[mtimefma])
+                countl += 1
+            countfma += 1
         if len(rows3) == 6000:
           tab3.insertl(rows3)
           tab10.insertl(rows10)
@@ -2186,7 +2208,7 @@ class SixDeskDB(object):
       cmd="""DROP TABLE IF EXISTS %s"""%(t)
       self.conn.cursor().execute(cmd)
     return data
-  def plot_fma_footprint(self,seed,tune,turns,inputfile,method,eps1='eps1_0',eps2='eps2_0',dq=None,vmin=None,vmax=None,grid=False):
+  def plot_fma_footprint(self,seed,tune,turns,inputfile,method,eps1='eps1_0',eps2='eps2_0',dq=None,vmin=None,vmax=None,grid=False,c_grid='k'):
     """plot q1 vs q2 colorcoded by sqrt((eps1+eps2)/eps0)
     
     Parameters:
@@ -2207,7 +2229,6 @@ class SixDeskDB(object):
         are saturated)
     dq: plot range is (tune-dq,tune+dq)
     """
-    config_fma_flag = False
     data=self.get_fma(seed,tune,turns,inputfile,method)
     eps0=self.env_var['emit']*self.env_var['pmass']/self.env_var['e0']
     amp=np.sqrt((data[eps1]+data[eps2])/eps0)
@@ -2224,48 +2245,36 @@ class SixDeskDB(object):
     else:
       from itertools import groupby
       from operator import itemgetter
-      fma_config = os.path.join(os.getcwd() + "/FMA_config.py")
-      if os.path.exists(fma_config):
-        print "FMA_config file has been detected in sixjobs and it will be used for the configuration of the plots"
-        config_fma_flag = True
-        sys.path.append(os.getcwd())
-        import FMA_config
-        c_grid = FMA_config.plot['c_grid']
-      else:
-        c_grid = 'k'
       for key, group in groupby(data, key=lambda d: (d['angle'])):
         qx = []
         qy = []
         for elem in group:
-          qx.append(elem[16])
-          qy.append(elem[17])
+          ### If coupling detected do not connect
+          if abs(elem[16] - elem[17])>1e-3 :
+            qx.append(elem[16])
+            qy.append(elem[17])
+          else:
+            pl.plot(elem[16],elem[17],linewidth=1, c=c_grid,marker='o',ms=1)
         pl.plot(qx,qy,linewidth=1, c=c_grid)
       grouper = itemgetter("part_id", "amp1")
       for key, group in groupby(sorted(data, key = grouper), grouper):
         qx = []
         qy = []
         for elem in group:
-          qx.append(elem[16])
-          qy.append(elem[17])
+          if abs(elem[16] - elem[17])>1e-3 :
+            qx.append(elem[16])
+            qy.append(elem[17])
+          else:
+            pl.plot(elem[16],elem[17],linewidth=1, c=c_grid,marker='o',ms=1)
         pl.plot(qx,qy,linewidth=1, c=c_grid)
-    if config_fma_flag:
-      pl.xlabel(FMA_config.plot['xaxis']['xlabel'],fontsize=FMA_config.plot['xaxis']['fontsize'])
-      pl.ylabel(FMA_config.plot['yaxis']['ylabel'], fontsize=FMA_config.plot['yaxis']['fontsize'])
-      pl.tick_params(labelsize=FMA_config.plot['ticks'])
-      pl.xlim(FMA_config.plot['xaxis']['xmin'], FMA_config.plot['xaxis']['xmax'])
-      pl.ylim(FMA_config.plot['yaxis']['ymin'], FMA_config.plot['yaxis']['ymax'])
-      pl.title(FMA_config.plot['title'], fontsize= FMA_config.plot['title_fontsize'])
-      if FMA_config.plot['tight_layout']:
-        pl.tight_layout()
-    else:
-      pl.xlabel(r'$Q_1$')
-      pl.ylabel(r'$Q_2$')
-      pl.title('%s %s'%(inputfile,method))
-      # limit plotrange to 1.e-2 distance from lattice tune
-      if dq==None: dq=1.e-2
-      print """plot_fma_footprint: limit plotrange to %2.2e distance from lattice tune in order to exclude chaotic tunes"""%dq
-      pl.xlim(np.modf(tune[0])[0]-dq,np.modf(tune[0])[0]+dq)
-      pl.ylim(np.modf(tune[1])[0]-dq,np.modf(tune[1])[0]+dq)
+    pl.xlabel(r'$Q_1$')
+    pl.ylabel(r'$Q_2$')
+    pl.title('%s %s'%(inputfile,method))
+    # limit plotrange to 1.e-2 distance from lattice tune
+    if dq==None: dq=1.e-2
+    print """plot_fma_footprint: limit plotrange to %2.2e distance from lattice tune in order to exclude chaotic tunes"""%dq
+    pl.xlim(np.modf(tune[0])[0]-dq,np.modf(tune[0])[0]+dq)
+    pl.ylim(np.modf(tune[1])[0]-dq,np.modf(tune[1])[0]+dq)
     pl.grid()
 
   def plot_fma_action_tune(self,seed,tune,turns,inputfile,method,mode,eps1='eps1_0',eps2='eps2_0',vmin=None,vmax=None):
@@ -2303,7 +2312,7 @@ class SixDeskDB(object):
     pl.xlabel(r'$\sigma_x=\sqrt{\frac{\epsilon_{1,%s}}{\epsilon_0}} , \ \epsilon_{0,N}=\epsilon_0/\gamma = %2.2f \ \mu \rm m$'%(eps1.split('_')[1],self.env_var['emit']))
     pl.ylabel(r'$\sigma_y=\sqrt{\frac{\epsilon_{2,%s}}{\epsilon_0}} , \ \epsilon_{0,N}=\epsilon_0/\gamma = %2.2f \ \mu \rm m$'%(eps2.split('_')[1],self.env_var['emit']))
     pl.title('%s %s'%(inputfile,method))
-  def plot_fma_scatter(self,seed,tune,turns,files,var1='eps1_0',var2='eps2_0',dqmode='trans',vmin=None,vmax=None, dqlim=5.e-2):
+  def plot_fma_scatter(self,seed,tune,turns,files,var1='eps1_0',var2='eps2_0',dqmode='trans',vmin=None,vmax=None, dqlim=5.e-2,plot_colorbar=True):
     """scatter plot var1 vs var2 of inputfile_0 colorcoded by the 
     difference in tune over all (inputfile,method) pairs in *files*.
     With the parameter *dqmode* the calculation of the difference in
@@ -2345,13 +2354,6 @@ class SixDeskDB(object):
         [vmin,vmax] are saturated)
         default values: vmin=-3,vmax=-7
     """
-    config_fma_flag = False
-    fma_config = os.path.join(os.getcwd() + "/FMA_config.py")
-    if os.path.exists(fma_config):
-      config_fma_flag = True
-      print "FMA_config file has been detected in sixjobs and it will be used for the configuration of the plots"
-      sys.path.append(os.getcwd())
-      import FMA_config
 
     data=self.get_fma_intersept(seed=seed,tune=tune,turns=turns,files=files)
     nfma = len(files)
@@ -2381,12 +2383,8 @@ class SixDeskDB(object):
     np.place(dqmax,dqmax==0,[1.e-60])
     dq=np.log10(dqmax)
 # default plot range for dq (colorbar)
-    if config_fma_flag:
-      vmin = FMA_config.plot['vmin']
-      vmax = FMA_config.plot['vmax']
-    else:
-      if vmin == None: vmin = -3
-      if vmax == None: vmax = -7
+    if vmin == None: vmin = -3
+    if vmax == None: vmax = -7
 # amplitude vs dq
     if('eps' in var1 and 'eps' in var2):
       eps0=self.env_var['emit']*self.env_var['pmass']/self.env_var['e0']
@@ -2399,21 +2397,14 @@ class SixDeskDB(object):
       pl.ylabel(r'$\sigma_y=\sqrt{\frac{\epsilon_{2,%s}}{\epsilon_0}}, \ \epsilon_{0,N}=\epsilon_0/\gamma = %2.2f \ \mu \rm m$'%(var2.split('_')[1],self.env_var['emit']))
 # tune vs dq
     elif('q' in var1 and 'q' in var2):
-      pl.scatter(data['fma0_%s'%var1],data['fma0_%s'%var2],c=dq,marker='.',linewidth=0,vmin=vmin,vmax=vmax,s=5)
+      pl.scatter(data['fma0_%s'%var1],data['fma0_%s'%var2],c=dq,marker='.',linewidth=0,vmin=vmin,vmax=vmax)
       pl.xlabel('$Q_%s$'%(var1.split('q')[1]))
       pl.ylabel('$Q_%s$'%(var2.split('q')[1]))
 # limit plotrange to dqlim distance from lattice tune
       #dqlim=5.e-2
-      
-      if config_fma_flag:
-        print "limits set by the user from the FMA config file in sixjobs"
-        pl.xlim(FMA_config.plot['xaxis']['xmin'], FMA_config.plot['xaxis']['xmax'])
-        pl.ylim(FMA_config.plot['yaxis']['ymin'], FMA_config.plot['yaxis']['ymax'])
-        pl.title(FMA_config.plot['title'], fontsize= FMA_config.plot['title_fontsize'])
-      else:
-        print """plot_fma_scatter: limit plotrange to %2.2e distance from lattice tune in order to exclude chaotic tunes"""%dqlim
-        pl.xlim(np.modf(tune[0])[0]-dqlim,np.modf(tune[0])[0]+dqlim)
-        pl.ylim(np.modf(tune[1])[0]-dqlim,np.modf(tune[1])[0]+dqlim)
+      print """plot_fma_scatter: limit plotrange to %2.2e distance from lattice tune in order to exclude chaotic tunes"""%dqlim
+      pl.xlim(np.modf(tune[0])[0]-dqlim,np.modf(tune[0])[0]+dqlim)
+      pl.ylim(np.modf(tune[1])[0]-dqlim,np.modf(tune[1])[0]+dqlim)
     elif('amp' in var1 or 'amp' in var2):
       npart = self.env_var['sixdeskpairs']
       ampr = data['fma0_amp1']+(data['fma0_amp2']-data['fma0_amp1'])/(npart-1)*(data['fma0_part_id']/2-1)
@@ -2422,19 +2413,24 @@ class SixDeskDB(object):
       pl.scatter(ampx,ampy,c=dq,marker='.',linewidth=0,vmin=vmin,vmax=vmax,s=5)
       pl.xlabel(r'$\sigma_x$')
       pl.ylabel(r'$\sigma_y$')
-    cbar=pl.colorbar()
-    if nfma <2:
-      if dqmode in ['q1','q2','q3']:
-        mode=dqmode.split('q')[1]
-        cbar.set_label(r'$\log10{(|Q_{%s,1}-Q_{%s,0}|)}$'%(mode,mode),labelpad=40,rotation=270)
-      if dqmode == 'trans':
-        cbar.set_label(r'$\log10{(\max_{i=1,2}(|Q_{i,1}-Q_{i,0}|))}$',labelpad=40,rotation=270)
+    if plot_colorbar:
+      cbar=pl.colorbar()
+      if nfma <2:
+        if dqmode in ['q1','q2','q3']:
+          mode=dqmode.split('q')[1]
+          cbar.set_label(r'$\log10{(|Q_{%s,1}-Q_{%s,0}|)}$'%(mode,mode),labelpad=40,rotation=270)
+        if dqmode == 'trans':
+          cbar.set_label(r'$\log10{(\max_{i=1,2}(|Q_{i,1}-Q_{i,0}|))}$',labelpad=40,rotation=270)
+      else:
+        if dqmode in ['q1','q2','q3']:
+          mode=dqmode.split('q')[1]
+          cbar.set_label(r'$\log10{(\max_{i=1}^{\rm nfma}|Q_{%s,i}-\bar Q_{%s}|)}$'%(mode,mode),labelpad=40,rotation=270)
+        if dqmode == 'trans':
+          cbar.set_label(r'$\max_{j=1,2}(\log10{(\max_{i=1}^{\rm nfma}|Q_{j,i}-\bar Q_{j}|)}$',labelpad=40,rotation=270)
     else:
-      if dqmode in ['q1','q2','q3']:
-        mode=dqmode.split('q')[1]
-        cbar.set_label(r'$\log10{(\max_{i=1}^{\rm nfma}|Q_{%s,i}-\bar Q_{%s}|)}$'%(mode,mode),labelpad=40,rotation=270)
-      if dqmode == 'trans':
-        cbar.set_label(r'$\max_{j=1,2}(\log10{(\max_{i=1}^{\rm nfma}|Q_{j,i}-\bar Q_{j}|)}$',labelpad=40,rotation=270)
+      cbar=pl.colorbar()
+      cbar.remove()
+      pl.draw()
     pl.grid()
   def plot_res(self,m,n,l=0,qz=0,color='b',linestyle='-'):
     """plot resonance of order (m,n,l) where l is
